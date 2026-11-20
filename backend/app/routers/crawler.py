@@ -65,3 +65,50 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.get("/{entry_id}/snapshots")
+def list_snapshots(entry_id: int) -> dict[str, Any]:
+    """列出规则的发布快照（含已回滚的中断残痕），可执行口径以「有效」为准。"""
+    if service.get_entry(entry_id) is None:
+        raise HTTPException(status_code=404, detail=f"采集规则 {entry_id} 不存在或已归档")
+    snapshots = service.list_snapshots(entry_id)
+    current = service.current_snapshot(entry_id)
+    return {
+        "items": snapshots,
+        "total": len(snapshots),
+        "当前可执行版本": current["版本号"] if current else None,
+    }
+
+
+@router.post("/{entry_id}/publish", response_model=ActionResult)
+def publish_rule(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """发布规则版本：四要素整体绑定成原子快照；模拟中断时只留回滚残痕，可安全重试。"""
+    overrides = {field: payload.values.get(field) for field in ("目标网址", "正文选择器", "翻页参数", "字符编码") if payload.values.get(field)}
+    simulate = str(payload.values.get("模拟中断") or "").strip() in ("1", "true", "是")
+    snapshot, message = service.publish_rule(entry_id, overrides=overrides or None, simulate_interruption=simulate)
+    if snapshot is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=snapshot)
+
+
+@router.get("/{entry_id}/pages")
+def list_pages(entry_id: int) -> dict[str, Any]:
+    """列出规则已抓取的页面，每页都绑定了抓取时的快照版本。"""
+    if service.get_entry(entry_id) is None:
+        raise HTTPException(status_code=404, detail=f"采集规则 {entry_id} 不存在或已归档")
+    pages = service.list_pages(entry_id)
+    return {"items": pages, "total": len(pages)}
+
+
+@router.post("/{entry_id}/fetch", response_model=ActionResult)
+def fetch_page(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """按当前可执行快照抓取一页；已抓过的页保留原关联，不允许换版本重抓。"""
+    try:
+        page_no = int(payload.values.get("页码"))
+    except (TypeError, ValueError):
+        return ActionResult(ok=False, message="请给出要抓取的页码（整数）")
+    page, message = service.fetch_page(entry_id, page_no)
+    if page is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=page)

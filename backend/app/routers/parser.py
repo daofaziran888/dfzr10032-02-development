@@ -23,6 +23,28 @@ def export_entries() -> dict[str, Any]:
     return {"module": "parser", "total": total, "items": items}
 
 
+@router.get("/records")
+def list_records(
+    规则编号: str | None = Query(default=None, description="按规则编号过滤正文记录"),
+    快照版本: int | None = Query(default=None, description="按发布快照版本过滤"),
+    页面id: int | None = Query(default=None, description="按页面过滤"),
+) -> dict[str, Any]:
+    """正文记录列表：每段文字都能回查页面、快照版本与正文选择器。"""
+    records = service.list_records(规则编号=规则编号, 快照版本=快照版本, 页面id=页面id)
+    return {"items": records, "total": len(records)}
+
+
+@router.get("/notification")
+def notification_view(
+    规则编号: str = Query(..., description="通知对应的采集规则编号"),
+) -> dict[str, Any]:
+    """值班员通知视图：汇总持久化的公告正文，标注闭馆时间是否已进入本次通知。"""
+    view, message = service.notification_view(规则编号)
+    if view is None:
+        raise HTTPException(status_code=404, detail=message)
+    return view
+
+
 @router.get("", response_model=PageResult[dict])
 def list_entries(
     request: Request,
@@ -65,3 +87,19 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.post("/{entry_id}/parse", response_model=ActionResult)
+def parse(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """按页面绑定的发布快照解析正文：给页面id解析单页，给规则id解析其全部已抓页面。"""
+    page_id = payload.values.get("页面id")
+    rule_id = payload.values.get("规则id")
+    if page_id is not None:
+        records, message = service.parse_page(entry_id, int(page_id))
+    elif rule_id is not None:
+        records, message = service.parse_rule_pages(entry_id, int(rule_id))
+    else:
+        return ActionResult(ok=False, message="请给出页面id或规则id")
+    if records is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry={"解析记录数": len(records)})
